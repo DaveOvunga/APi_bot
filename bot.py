@@ -3,10 +3,11 @@ import pandas as pd
 import numpy as np
 import time
 import requests
+import os
 
-# Configuration Telegram
-TELEGRAM_BOT_TOKEN = '8223573513:AAF56ggMmkO70d0QiJgz_FUxGUpqnl6_-YA'
-TELEGRAM_CHAT_ID = '5892783171'  # Remplace par ton vrai Chat ID
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 
 def send_telegram_alert(message):
     url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
