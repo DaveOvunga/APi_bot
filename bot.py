@@ -3,6 +3,8 @@ import json
 import threading
 import time
 from datetime import datetime
+from notifier import TelegramNotifier
+
 
 notifier = TelegramNotifier()
 
