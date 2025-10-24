@@ -5,8 +5,4 @@ services:
     plan: free
     buildCommand: ""
     startCommand: "python app.py"
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        value: 8242678450:AAEMEFQSzUVUl10pik6CEqHzWjVyTKCvOAk
-      - key: TELEGRAM_CHAT_ID
-        value: 6566989042
+    
