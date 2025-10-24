@@ -7,6 +7,6 @@ services:
     startCommand: "python app.py"
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        value: ton_token_telegram
+        value: 8242678450:AAEMEFQSzUVUl10pik6CEqHzWjVyTKCvOAk
       - key: TELEGRAM_CHAT_ID
-        value: ton_chat_id
+        value: 6566989042
