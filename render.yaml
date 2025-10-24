@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: deriv-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python app.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: ton_token_telegram
+      - key: TELEGRAM_CHAT_ID
+        value: ton_chat_id

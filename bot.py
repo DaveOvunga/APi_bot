@@ -1,66 +1,120 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
+import websocket
+import json
+import threading
 import time
-import requests
-import os
+from datetime import datetime
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+notifier = TelegramNotifier()
 
+SYMBOLS = {
+    "Boom 1000": "R_100",
+    "Crash 1000": "R_10",
+    "Boom 500": "BOOM500",
+    "Crash 500": "CRASH500"
+}
 
-def send_telegram_alert(message):
-    url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message
-    }
-    try:
-        requests.post(url, data=payload)
-    except Exception as e:
-        print(f"Erreur d'envoi Telegram : {e}")
+SPIKE_THRESHOLD = 1.0  # % variation EMA
+PIP_THRESHOLD = 50     # variation brute
+APP_ID = "1089"
 
-def monitor_gold_market():
-    already_alerted = set()
+def start_stream(symbol_name, symbol_code):
+    previous_prices = []
 
-    while True:
-        try:
-            # Récupérer les données minute par minute
-            gold = yf.Ticker("GC=F")
-            data = gold.history(period="1d", interval="1m")
+    def calculate_ema(prices, period):
+        if len(prices) < period:
+            return None
+        weights = [2 / (period + 1)] * period
+        ema = prices[-period]
+        for i in range(-period + 1, 0):
+            ema = (prices[i] - ema) * weights[0] + ema
+        return ema
 
-            # Nettoyer les données
-            data = data.reset_index()
-            data.dropna(inplace=True)
+    def on_message(ws, message):
+        data = json.loads(message)
+        if "tick" in data:
+            price = float(data["tick"]["quote"])
+            timestamp = datetime.fromtimestamp(data["tick"]["epoch"])
+            previous_prices.append(price)
 
-            # Calcul du pourcentage de variation
-            data['Pct_Change'] = data['Close'].pct_change() * 100
+            # EMA rapide et lente
+            ema_fast = calculate_ema(previous_prices, 5)
+            ema_slow = calculate_ema(previous_prices, 15)
 
-            # Détection des impulsions
-            data['Impulse'] = (data['Pct_Change'].abs() >= 1.0).astype(int)
+            # Détection de tendance
+            if ema_fast and ema_slow:
+                if ema_fast > ema_slow:
+                    trend = "haussière"
+                elif ema_fast < ema_slow:
+                    trend = "baissière"
+                else:
+                    trend = "neutre"
+            else:
+                trend = "indéterminée"
 
-            # Calcul du midpoint
-            data['Midpoint'] = np.nan
-            impulse_indices = data[data['Impulse'] == 1].index
-            for idx in impulse_indices:
-                high = data.loc[idx, 'High']
-                low = data.loc[idx, 'Low']
-                midpoint = (high + low) / 2
-                data.loc[idx, 'Midpoint'] = midpoint
+            # Spike par variation EMA
+            if len(previous_prices) >= 10:
+                ema = sum(previous_prices[-10:]) / 10
+                variation_pct = ((price - ema) / ema) * 100
 
-            # Vérifier et alerter
-            for idx, row in data.iterrows():
-                key = f"{row['Datetime']}_{row['Midpoint']:.2f}"
-                if row['Impulse'] == 1 and row['Close'] <= row['Midpoint'] and key not in already_alerted:
-                    alert_message = f"{row['Datetime']} → Impulsion détectée. Midpoint: {row['Midpoint']:.2f}, Prix actuel: {row['Close']:.2f}"
-                    print(alert_message)
-                    send_telegram_alert(alert_message)
-                    already_alerted.add(key)
+                if abs(variation_pct) >= SPIKE_THRESHOLD:
+                    spike_info = {
+                        'symbol': symbol_name,
+                        'type': 'haussier' if variation_pct > 0 else 'baissier',
+                        'price': price,
+                        'previous_price': ema,
+                        'variation_pct': variation_pct,
+                        'timestamp': timestamp,
+                        'trend': trend
+                    }
+                    notifier.send_spike_alert(spike_info)
 
-        except Exception as e:
-            print(f"Erreur dans la boucle principale : {e}")
+            # Spike par variation brute
+            if len(previous_prices) >= 2:
+                last_price = previous_prices[-2]
+                pip_diff = abs(price - last_price)
 
-        time.sleep(60)  # Attendre 1 minute avant de relancer
+                if pip_diff >= PIP_THRESHOLD:
+                    spike_info = {
+                        'symbol': symbol_name,
+                        'type': 'haussier' if price > last_price else 'baissier',
+                        'price': price,
+                        'previous_price': last_price,
+                        'variation_pct': ((price - last_price) / last_price) * 100,
+                        'timestamp': timestamp,
+                        'trend': trend
+                    }
+                    notifier.send_spike_alert(spike_info)
 
-# Lancer le bot
-monitor_gold_market()
+            print(f"[{symbol_name}] {timestamp.strftime('%H:%M:%S')} → {price:.2f} | Tendance : {trend}")
+
+    def on_open(ws):
+        print(f"🔗 Connexion WebSocket ouverte pour {symbol_name}")
+        ws.send(json.dumps({
+            "ticks": symbol_code,
+            "subscribe": 1
+        }))
+
+    def on_error(ws, error):
+        print(f"❌ Erreur WebSocket ({symbol_name}) : {error}")
+
+    def on_close(ws, close_status_code, close_msg):
+        print(f"🔌 Connexion WebSocket fermée ({symbol_name})")
+
+    ws = websocket.WebSocketApp(
+        f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}",
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close
+    )
+    ws.run_forever()
+
+# Lancer tous les flux en parallèle
+for name, code in SYMBOLS.items():
+    threading.Thread(target=start_stream, args=(name, code)).start()
+    
+
+def launch_bot():
+    for name, code in SYMBOLS.items():
+        threading.Thread(target=start_stream, args=(name, code)).start()
+
