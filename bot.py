@@ -1,10 +1,8 @@
 import websocket
 import json
 import threading
-import time
 from datetime import datetime
 from notifier import TelegramNotifier
-
 
 notifier = TelegramNotifier()
 
@@ -15,21 +13,30 @@ SYMBOLS = {
     "Crash 500": "CRASH500"
 }
 
-SPIKE_THRESHOLD = 1.0  # % variation EMA
-PIP_THRESHOLD = 50     # variation brute
 APP_ID = "1089"
+
+def calculate_ema(prices, period):
+    if len(prices) < period:
+        return None
+    weights = [2 / (period + 1)] * period
+    ema = prices[-period]
+    for i in range(-period + 1, 0):
+        ema = (prices[i] - ema) * weights[0] + ema
+    return ema
+
+def confirm_entry(symbol_name, price, trend, timestamp):
+    if trend in ["haussière", "baissière"]:
+        entry_info = {
+            'symbol': symbol_name,
+            'type': 'achat' if trend == 'haussière' else 'vente',
+            'price': price,
+            'timestamp': timestamp,
+            'trend': trend
+        }
+        notifier.send_entry_confirmation(entry_info)
 
 def start_stream(symbol_name, symbol_code):
     previous_prices = []
-
-    def calculate_ema(prices, period):
-        if len(prices) < period:
-            return None
-        weights = [2 / (period + 1)] * period
-        ema = prices[-period]
-        for i in range(-period + 1, 0):
-            ema = (prices[i] - ema) * weights[0] + ema
-        return ema
 
     def on_message(ws, message):
         data = json.loads(message)
@@ -38,54 +45,15 @@ def start_stream(symbol_name, symbol_code):
             timestamp = datetime.fromtimestamp(data["tick"]["epoch"])
             previous_prices.append(price)
 
-            # EMA rapide et lente
             ema_fast = calculate_ema(previous_prices, 5)
             ema_slow = calculate_ema(previous_prices, 15)
 
-            # Détection de tendance
             if ema_fast and ema_slow:
-                if ema_fast > ema_slow:
-                    trend = "haussière"
-                elif ema_fast < ema_slow:
-                    trend = "baissière"
-                else:
-                    trend = "neutre"
+                trend = "haussière" if ema_fast > ema_slow else "baissière" if ema_fast < ema_slow else "neutre"
             else:
                 trend = "indéterminée"
 
-            # Spike par variation EMA
-            if len(previous_prices) >= 10:
-                ema = sum(previous_prices[-10:]) / 10
-                variation_pct = ((price - ema) / ema) * 100
-
-                if abs(variation_pct) >= SPIKE_THRESHOLD:
-                    spike_info = {
-                        'symbol': symbol_name,
-                        'type': 'haussier' if variation_pct > 0 else 'baissier',
-                        'price': price,
-                        'previous_price': ema,
-                        'variation_pct': variation_pct,
-                        'timestamp': timestamp,
-                        'trend': trend
-                    }
-                    notifier.send_spike_alert(spike_info)
-
-            # Spike par variation brute
-            if len(previous_prices) >= 2:
-                last_price = previous_prices[-2]
-                pip_diff = abs(price - last_price)
-
-                if pip_diff >= PIP_THRESHOLD:
-                    spike_info = {
-                        'symbol': symbol_name,
-                        'type': 'haussier' if price > last_price else 'baissier',
-                        'price': price,
-                        'previous_price': last_price,
-                        'variation_pct': ((price - last_price) / last_price) * 100,
-                        'timestamp': timestamp,
-                        'trend': trend
-                    }
-                    notifier.send_spike_alert(spike_info)
+            confirm_entry(symbol_name, price, trend, timestamp)
 
             print(f"[{symbol_name}] {timestamp.strftime('%H:%M:%S')} → {price:.2f} | Tendance : {trend}")
 
@@ -111,12 +79,6 @@ def start_stream(symbol_name, symbol_code):
     )
     ws.run_forever()
 
-# Lancer tous les flux en parallèle
-for name, code in SYMBOLS.items():
-    threading.Thread(target=start_stream, args=(name, code)).start()
-    
-
 def launch_bot():
     for name, code in SYMBOLS.items():
         threading.Thread(target=start_stream, args=(name, code)).start()
-
